@@ -2,7 +2,7 @@ use std::env;
 use std::error::Error;
 
 use actix_web::{get, post, web::{self, Data}, App, HttpResponse, HttpServer, Responder};
-use elasticsearch::{auth::Credentials, http::{response::Response, transport::Transport}, Elasticsearch, SearchParts};
+use elasticsearch::{auth::Credentials, http::{response::Response, transport::Transport}, Elasticsearch, GetParts, SearchParts};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -47,6 +47,15 @@ impl ElSearch {
         let response = self.client
             .search(SearchParts::Index(&[index_name]))
             .body(query_body)
+            .send()
+            .await?;
+
+        Ok(response)
+    }
+
+    async fn query_by_doc_id(&self, index_name: &str, id: &str) -> Result<Response, Box<dyn Error>> {
+        let response = self.client
+            .get(GetParts::IndexId(index_name, id))
             .send()
             .await?;
 
@@ -113,6 +122,19 @@ async fn get_all_pizzas(es: web::Data<ElSearch>) -> impl Responder {
     HttpResponse::Ok().json(pizzas)
 }
 
+#[get("/pizza/{id}")]
+async fn get_pizza(es: web::Data<ElSearch>, id: web::Path<String>) -> impl Responder {
+    let id_string = id.as_str();
+    let response = es.query_by_doc_id("pizzas_dev", id_string).await.unwrap();
+    
+    let resp_body = response.json::<Value>().await.unwrap();
+    let pizza_data: PizzaCreate = serde_json::from_value(resp_body["_source"].clone()).unwrap();
+
+    let pizza = Pizza::new(pizza_data, id_string.to_string());
+
+    HttpResponse::Ok().json(pizza)
+}
+
 #[post("/pizza")]
 async fn post_pizza(es: web::Data<ElSearch>, pizza_data: web::Json<PizzaCreate>) -> impl Responder {
     let post_body = json!(pizza_data);
@@ -135,8 +157,8 @@ async fn post_pizza(es: web::Data<ElSearch>, pizza_data: web::Json<PizzaCreate>)
 async fn main() -> std::io::Result<()> {
     dotenv::dotenv().ok();
 
-    // std::env::set_var("RUST_LOG", "debug");
-    // env_logger::init();
+    std::env::set_var("RUST_LOG", "debug");
+    env_logger::init();
 
     let config = Config {
         api_key: env::var("API_KEY").unwrap(),
@@ -153,6 +175,7 @@ async fn main() -> std::io::Result<()> {
             .app_data(app_data.clone())
             .service(get_all_pizzas)
             .service(post_pizza)
+            .service(get_pizza)
     })
     .bind(("127.0.0.1", 8080))?
     .workers(2)
